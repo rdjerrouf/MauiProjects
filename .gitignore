@@ -1,0 +1,15 @@
+# Binaries and Build output
+[Bb]in/
+[Oo]bj/
+
+# Visual Studio specific
+/.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Others (add as needed)
+# For example:
+# *.bak
+# *.[Cc]ache
