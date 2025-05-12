@@ -2,6 +2,8 @@
 
 
 
+using MarketDZ.Models.Core.Entities;
+
 namespace MarketDZ.Models.Core
 {
     /// <summary>

@@ -1,4 +1,5 @@
 ﻿using MarketDZ.Models;
+using MarketDZ.Models.Core.Entities;
 
 namespace MarketDZ.Services.Application.Users.Interfaces
 {

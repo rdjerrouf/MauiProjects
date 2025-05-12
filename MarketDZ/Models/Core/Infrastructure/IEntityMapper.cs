@@ -10,5 +10,6 @@ namespace MarketDZ.Models.Core.Infrastructure
     {
         TDomain ToDomain(TEntity entity);
         TEntity ToEntity(TDomain domain);
+        TEntity UpdateEntity(TEntity existingEntity, TDomain domain);
     }
 }

@@ -94,4 +94,19 @@
 		</MauiXaml>
 	</ItemGroup>
 
+	<ItemGroup>
+	  <Folder Include="Services\Application\Email\Implementations\" />
+	  <Folder Include="Services\Application\Items\Adapters\" />
+	  <Folder Include="Services\Application\Items\Implementations\" />
+	  <Folder Include="Services\Application\Location\Implementations\" />
+	  <Folder Include="Services\Application\Location\Models\" />
+	  <Folder Include="Services\Application\Media\Models\" />
+	  <Folder Include="Services\Application\Messaging\Implementations\" />
+	  <Folder Include="Services\Application\Security\Implementations\" />
+	  <Folder Include="Services\Application\Users\Implementations\" />
+	  <Folder Include="Services\Core\Models\" />
+	  <Folder Include="Services\Infrastructure\Common\Cache\" />
+	  <Folder Include="Services\Infrastructure\Firebase\Utils\" />
+	</ItemGroup>
+
 </Project>

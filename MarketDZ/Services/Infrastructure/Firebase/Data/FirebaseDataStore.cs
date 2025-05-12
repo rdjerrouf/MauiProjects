@@ -1,331 +1,250 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.Linq;
-using System.Net.Http;
-using System.Threading;
 using System.Threading.Tasks;
-using Firebase.Database;
-using Firebase.Database.Query;
-using MarketDZ.Models;
+using MarketDZ.Services.Core.Interfaces.Data;
 using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
-using Newtonsoft.Json.Linq;
 
 namespace MarketDZ.Services.Infrastructure.Firebase.Data
 {
     /// <summary>
-    /// Firebase implementation of IAppCoreDataStore
+    /// Firebase implementation of the IAppCoreDataStore interface
     /// </summary>
     public class FirebaseDataStore : IAppCoreDataStore
     {
+        private readonly string _databaseUrl;
         private readonly FirebaseClient _firebaseClient;
-        private readonly HttpClient _httpClient;
-        private readonly string _firebaseUrl;
-        private readonly ICacheService _cacheService;
         private readonly ILogger<FirebaseDataStore> _logger;
-        private readonly FirebaseQueryConverter _queryConverter;
-        protected readonly int _maxRetries = 3;
-        protected readonly TimeSpan _retryDelay = TimeSpan.FromSeconds(1);
-        private bool _isInitialized;
-        private static SemaphoreSlim _initLock = new SemaphoreSlim(1, 1);
-        private readonly CancellationTokenSource _maintenanceCts = new CancellationTokenSource();
+        private bool _initialized = false;
 
-        /// <summary>
-        /// Creates a new Firebase data store
-        /// </summary>
-        /// <param name="cacheService">Cache service</param>
-        /// <param name="logger">Logger</param>
-        /// <param name="firebaseUrl">Firebase URL (optional)</param>
         public FirebaseDataStore(
-            ICacheService cacheService,
-            ILogger<FirebaseDataStore> logger,
-            string? firebaseUrl = null)
+            string databaseUrl,
+            FirebaseClient firebaseClient,
+            ILogger<FirebaseDataStore> logger)
         {
-            _cacheService = cacheService ?? throw new ArgumentNullException(nameof(cacheService));
+            _databaseUrl = databaseUrl ?? throw new ArgumentNullException(nameof(databaseUrl));
+            _firebaseClient = firebaseClient ?? throw new ArgumentNullException(nameof(firebaseClient));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
-
-            // Store the Firebase URL for later use
-            _firebaseUrl = firebaseUrl ?? "https://marketdz-a6db7-default-rtdb.firebaseio.com/";
-
-            // Log the Firebase URL we're trying to connect to
-            _logger.LogInformation($"Initializing Firebase with URL: {_firebaseUrl}");
-
-            // Initialize Firebase client
-            _firebaseClient = new FirebaseClient(
-                _firebaseUrl,
-                new FirebaseOptions
-                {
-                    AuthTokenAsyncFactory = () => Task.FromResult<string>("AIzaSyC3MJJ7XtyS6mEIkYWUUQ9o_HkHQ77QQcg")
-                });
-            // Initialize HttpClient for direct API access
-            _httpClient = new HttpClient();
-            _httpClient.Timeout = TimeSpan.FromSeconds(30);
-
-            // Initialize query converter
-            _queryConverter = new FirebaseQueryConverter(logger);
-
-            // Start background cache maintenance
-            _ = _cacheService.StartMaintenanceAsync(_maintenanceCts.Token);
         }
 
         /// <summary>
-        /// Initializes the data store
+        /// Initializes the connection to Firebase
         /// </summary>
         public async Task InitializeAsync()
         {
-            if (_isInitialized) return;
+            if (_initialized)
+            {
+                return;
+            }
 
-            await _initLock.WaitAsync();
             try
             {
-                if (_isInitialized) return;
+                _logger.LogInformation("Initializing Firebase connection to {DatabaseUrl}", _databaseUrl);
 
-                _logger.LogInformation("Starting Firebase initialization");
+                // Attempt a test connection
+                await _firebaseClient.GetAsync("");
 
-                // Create a proper JSON object to send
-                var testData = new { message = "Connection test: " + DateTime.UtcNow.ToString() };
-
-                // Put the data as a properly formatted JSON object
-                await _firebaseClient
-                    .Child("test")
-                    .PutAsync(testData);
-
-                _logger.LogInformation("Firebase write test successful");
-
-                // Try reading data as well
-                var readResult = await _firebaseClient
-                    .Child("test")
-                    .OnceSingleAsync<object>();
-
-                _logger.LogInformation($"Firebase read test result: {readResult != null}");
-                _logger.LogInformation("Firebase connection successful");
-                _isInitialized = true;
+                _initialized = true;
+                _logger.LogInformation("Firebase connection initialized successfully");
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Firebase initialization error");
+                _logger.LogError(ex, "Failed to initialize Firebase connection: {Message}", ex.Message);
                 throw;
             }
-            finally
-            {
-                _initLock.Release();
-            }
         }
 
-
-        private Task<string> GetAuthTokenAsync()
+        /// <summary>
+        /// Gets an entity by its path
+        /// </summary>
+        public async Task<T> GetEntityAsync<T>(string path) where T : class
         {
+            if (!_initialized)
+            {
+                await InitializeAsync();
+            }
+
             try
             {
-                string apiKey = "AIzaSyC3MJJ7XtyS6mEIkYWUUQ9o_HkHQ77QQcg";
-                _logger.LogInformation("Using API key authentication for Firebase. Note this needs to change after testing");
-                return Task.FromResult(apiKey);
+                _logger.LogTrace("Getting entity at path: {Path}", path);
+
+                var response = await _firebaseClient.GetAsync(path);
+
+                if (string.IsNullOrEmpty(response) || response == "null")
+                {
+                    return null;
+                }
+
+                return JsonConvert.DeserializeObject<T>(response);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Failed to get auth token");
-                return Task.FromResult(string.Empty);
+                _logger.LogError(ex, "Error getting entity at path {Path}: {Message}", path, ex.Message);
+                return null;
             }
-        }
-        /// <summary>
-        /// Retrieves a single entity by its path
-        /// </summary>
-        public async Task<T> GetEntityAsync<T>(string path)
-        {
-            await InitializeAsync();
-
-            string cacheKey = $"get:{path}";
-            if (_cacheService.TryGetFromCache<T>(cacheKey, out var cachedItem))
-            {
-                _logger.LogInformation($"Cache hit for {cacheKey}");
-                return cachedItem!;
-            }
-
-            _logger.LogInformation($"Fetching data from {path}");
-            var result = await ExecuteWithRetryAsync(() =>
-                _firebaseClient.Child(path).OnceSingleAsync<T>(),
-                $"GetEntityAsync:{path}");
-
-            if (result != null)
-            {
-                _cacheService.AddToCache(cacheKey, result);
-            }
-
-            return result;
         }
 
         /// <summary>
-        /// Retrieves a collection of entities
+        /// Gets a collection of entities
         /// </summary>
-        public async Task<IReadOnlyCollection<T>> GetCollectionAsync<T>(string path, IQueryParameters? parameters = null)
+        public async Task<IReadOnlyCollection<T>> GetCollectionAsync<T>(string path, IQueryParameters parameters = null) where T : class
         {
-            await InitializeAsync();
-
-            string cacheKey = $"collection:{path}" + (parameters != null ? ":" + parameters.GetCacheKey() : "");
-            if (_cacheService.TryGetFromCache<List<T>>(cacheKey, out var cachedItems))
+            if (!_initialized)
             {
-                _logger.LogInformation($"Cache hit for {cacheKey}");
-                return cachedItems!;
+                await InitializeAsync();
             }
-
-            _logger.LogInformation($"Fetching collection data from {path}");
 
             try
             {
-                // Build the query using the converter
-                ChildQuery query = parameters != null
-                    ? _queryConverter.BuildQuery(_firebaseClient, path, parameters)
-                    : _firebaseClient.Child(path);
+                _logger.LogTrace("Getting collection at path: {Path}", path);
 
-                // Get raw JSON first to handle both array and object formats properly
-                var jsonResponse = await query.OnceAsJsonAsync();
+                string queryPath = path;
 
-                if (string.IsNullOrWhiteSpace(jsonResponse) || jsonResponse == "null")
-                {
-                    _logger.LogWarning($"Empty or null response from {path}");
-                    return new List<T>();
-                }
-
-                List<T> result;
-
-                // Check if the response is an array
-                if (jsonResponse.TrimStart().StartsWith("["))
-                {
-                    _logger.LogInformation("Data is in array format, processing as array");
-
-                    // Process as array
-                    var jArray = JArray.Parse(jsonResponse);
-                    result = new List<T>();
-
-                    for (int i = 0; i < jArray.Count; i++)
-                    {
-                        if (jArray[i] != null && jArray[i].Type != JTokenType.Null)
-                        {
-                            try
-                            {
-                                var item = jArray[i].ToObject<T>();
-                                if (item != null)
-                                {
-                                    result.Add(item);
-                                }
-                            }
-                            catch (JsonException jsonEx)
-                            {
-                                _logger.LogError(jsonEx, $"Error deserializing item at index {i}");
-                            }
-                        }
-                    }
-
-                    _logger.LogInformation($"Retrieved {result.Count} items via array processing from {path}");
-                }
-                else
-                {
-                    // Process as object
-                    try
-                    {
-                        var dictionary = JsonConvert.DeserializeObject<Dictionary<string, T>>(jsonResponse);
-                        if (dictionary != null)
-                        {
-                            result = dictionary
-                                .Where(kvp => kvp.Value != null)
-                                .Select(kvp => kvp.Value)
-                                .ToList();
-
-                            _logger.LogInformation($"Retrieved {result.Count} items via dictionary processing from {path}");
-                        }
-                        else
-                        {
-                            result = new List<T>();
-                            _logger.LogWarning("Deserialized dictionary is null");
-                        }
-                    }
-                    catch (JsonException dictEx)
-                    {
-                        _logger.LogError(dictEx, "Error deserializing as dictionary: {Message}", dictEx.Message);
-                        result = new List<T>();
-                    }
-                }
-
-                // Apply any client-side filters if we have parameters
+                // Apply query parameters if provided
                 if (parameters != null)
                 {
-                    result = _queryConverter.ApplyClientSideFilters(result, parameters).ToList();
+                    // Convert parameters to Firebase query string
+                    var queryParts = new List<string>();
+
+                    // Add ordering
+                    if (parameters.SortCriteria.Any())
+                    {
+                        var sortCriterion = parameters.SortCriteria.First();
+                        string orderBy = $"orderBy=\"{sortCriterion.Field}\"";
+                        queryParts.Add(orderBy);
+
+                        if (sortCriterion.Direction == Core.Models.SortDirection.Descending)
+                        {
+                            queryParts.Add("limitToLast=true");
+                        }
+                    }
+
+                    // Add filters (basic Firebase REST query support is limited)
+                    foreach (var filter in parameters.FilterCriteria)
+                    {
+                        switch (filter.Operator)
+                        {
+                            case FilterOperator.Equal:
+                                queryParts.Add($"equalTo=\"{JsonConvert.SerializeObject(filter.Value).Trim('"')}\"");
+                                break;
+                            case FilterOperator.LessThan:
+                                queryParts.Add($"endAt=\"{JsonConvert.SerializeObject(filter.Value).Trim('"')}\"");
+                                break;
+                            case FilterOperator.LessThanOrEqual:
+                                queryParts.Add($"endAt=\"{JsonConvert.SerializeObject(filter.Value).Trim('"')}\"");
+                                break;
+                            case FilterOperator.GreaterThan:
+                                queryParts.Add($"startAt=\"{JsonConvert.SerializeObject(filter.Value).Trim('"')}\"");
+                                break;
+                            case FilterOperator.GreaterThanOrEqual:
+                                queryParts.Add($"startAt=\"{JsonConvert.SerializeObject(filter.Value).Trim('"')}\"");
+                                break;
+                            default:
+                                _logger.LogWarning("Unsupported filter operator: {Operator}", filter.Operator);
+                                break;
+                        }
+                    }
+
+                    // Add pagination
+                    if (parameters.Take > 0)
+                    {
+                        queryParts.Add($"limitToFirst={parameters.Take}");
+                    }
+
+                    // Build query string
+                    if (queryParts.Any())
+                    {
+                        queryPath += "?" + string.Join("&", queryParts);
+                    }
                 }
 
-                // Cache the results
-                _cacheService.AddToCache(cacheKey, result);
+                var response = await _firebaseClient.GetAsync(queryPath);
 
-                return result;
-            }
-            catch (FirebaseException fireEx)
-            {
-                _logger.LogError(fireEx, $"Firebase error in GetCollectionAsync for path {path}: {fireEx.Message}");
-                return new List<T>();
-            }
-            catch (JsonException jsonEx)
-            {
-                _logger.LogError(jsonEx, $"JSON deserialization error in GetCollectionAsync for path {path}: {jsonEx.Message}");
-                return new List<T>();
+                if (string.IsNullOrEmpty(response) || response == "null")
+                {
+                    return new List<T>().AsReadOnly();
+                }
+
+                // Parse Firebase response (key-value dictionary)
+                var dictionary = JsonConvert.DeserializeObject<Dictionary<string, T>>(response);
+
+                if (dictionary == null || !dictionary.Any())
+                {
+                    return new List<T>().AsReadOnly();
+                }
+
+                // Apply client-side pagination if needed (Firebase REST API has limited pagination support)
+                var result = dictionary.Values.ToList();
+
+                if (parameters != null && parameters.Skip > 0)
+                {
+                    result = result.Skip(parameters.Skip).ToList();
+                }
+
+                return result.AsReadOnly();
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, $"Error in GetCollectionAsync for path {path}: {ex.Message}");
-                return new List<T>();
+                _logger.LogError(ex, "Error getting collection at path {Path}: {Message}", path, ex.Message);
+                return new List<T>().AsReadOnly();
             }
         }
 
         /// <summary>
-        /// Creates or updates an entity at the specified path
+        /// Creates or updates an entity
         /// </summary>
-        public async Task<T> SetEntityAsync<T>(string path, T data)
+        public async Task<T> SetEntityAsync<T>(string path, T data) where T : class
         {
-            await InitializeAsync();
-
-            // Validate data
-            if (data == null)
+            if (!_initialized)
             {
-                throw new ArgumentNullException(nameof(data), "Cannot set null data to Firebase");
+                await InitializeAsync();
             }
 
-            _logger.LogInformation($"Setting data at {path}");
+            try
+            {
+                _logger.LogTrace("Setting entity at path: {Path}", path);
 
-            // Execute the operation with retries
-            await ExecuteWithRetryAsync<object>(() =>
-                _firebaseClient.Child(path).PutAsync<T>(data).ContinueWith(t => (object)new object()),
-                $"SetEntityAsync:{path}");
+                var json = JsonConvert.SerializeObject(data);
+                await _firebaseClient.PutAsync(path, json);
 
-            // Invalidate cache for this path and related collection paths
-            _cacheService.InvalidateCache($"get:{path}");
-            string collectionPath = path.Split('/')[0];
-            _cacheService.InvalidateCachePattern($"collection:{collectionPath}");
-
-            return data;
+                return data;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error setting entity at path {Path}: {Message}", path, ex.Message);
+                throw;
+            }
         }
 
         /// <summary>
-        /// Adds a new entity to a collection with an auto-generated key
+        /// Adds a new entity to a collection with an auto-generated ID
         /// </summary>
-        public async Task<(string Key, T Entity)> AddEntityAsync<T>(string path, T data)
+        public async Task<(string Key, T Entity)> AddEntityAsync<T>(string path, T data) where T : class
         {
-            await InitializeAsync();
-
-            // Validate data
-            if (data == null)
+            if (!_initialized)
             {
-                throw new ArgumentNullException(nameof(data), "Cannot add null data to Firebase");
+                await InitializeAsync();
             }
 
-            _logger.LogInformation($"Adding new item to {path}");
+            try
+            {
+                _logger.LogTrace("Adding entity to collection: {Path}", path);
 
-            var result = await ExecuteWithRetryAsync(() =>
-                _firebaseClient.Child(path).PostAsync(data),
-                $"AddEntityAsync:{path}");
+                var json = JsonConvert.SerializeObject(data);
+                var result = await _firebaseClient.PostAsync(path, json);
 
-            // Invalidate collection cache
-            _cacheService.InvalidateCachePattern($"collection:{path}");
+                // Extract the generated name/key from Firebase response
+                var response = JsonConvert.DeserializeObject<Dictionary<string, string>>(result);
+                string key = response["name"];
 
-            return (result.Key, result.Object);
+                return (key, data);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error adding entity to collection {Path}: {Message}", path, ex.Message);
+                throw;
+            }
         }
 
         /// <summary>
@@ -333,102 +252,117 @@ namespace MarketDZ.Services.Infrastructure.Firebase.Data
         /// </summary>
         public async Task UpdateEntityFieldsAsync(string path, IDictionary<string, object> updates)
         {
-            await InitializeAsync();
-
-            // Validate updates
-            if (updates == null || !updates.Any())
+            if (!_initialized)
             {
-                throw new ArgumentException("Updates dictionary cannot be null or empty", nameof(updates));
+                await InitializeAsync();
             }
-
-            _logger.LogInformation($"Updating properties at {path}: {string.Join(", ", updates.Keys)}");
-
-            foreach (var update in updates)
-            {
-                await ExecuteWithRetryAsync<object>(() =>
-                    _firebaseClient.Child(path).Child(update.Key).PutAsync<object>(update.Value).ContinueWith(t => (object)null),
-                    $"UpdateEntityFieldsAsync:{path}/{update.Key}");
-            }
-
-            // Invalidate related caches
-            _cacheService.InvalidateCache($"get:{path}");
-            string collectionPath = path.Split('/')[0];
-            _cacheService.InvalidateCachePattern($"collection:{collectionPath}");
-        }
-
-        /// <summary>
-        /// Deletes an entity at the specified path
-        /// </summary>
-        public async Task DeleteEntityAsync(string path)
-        {
-            await InitializeAsync();
-
-            _logger.LogInformation($"Deleting data at {path}");
-
-            await ExecuteWithRetryAsync<object>(() =>
-            _firebaseClient.Child(path).DeleteAsync().ContinueWith(t => (object)new object()),
-                $"DeleteEntityAsync:{path}");
-
-            // Invalidate related caches
-            _cacheService.InvalidateCache($"get:{path}");
-            string collectionPath = path.Split('/')[0];
-            _cacheService.InvalidateCachePattern($"collection:{collectionPath}");
-        }
-
-        /// <summary>
-        /// Performs multiple update operations in a batch
-        /// </summary>
-        public async Task BatchUpdateAsync(Dictionary<string, object> updates)
-        {
-            await InitializeAsync();
 
             try
             {
-                var tasks = updates.Select(kvp =>
-                    _firebaseClient.Child(kvp.Key).PutAsync(kvp.Value));
+                _logger.LogTrace("Updating fields at path: {Path}", path);
 
-                await Task.WhenAll(tasks);
-
-                // Invalidate affected cache entries
-                foreach (var path in updates.Keys)
-                {
-                    _cacheService.InvalidateCache($"get:{path}");
-                    string collectionPath = path.Split('/')[0];
-                    _cacheService.InvalidateCachePattern($"collection:{collectionPath}");
-                }
+                var json = JsonConvert.SerializeObject(updates);
+                await _firebaseClient.PatchAsync(path, json);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error executing batch update");
+                _logger.LogError(ex, "Error updating fields at path {Path}: {Message}", path, ex.Message);
                 throw;
             }
         }
 
         /// <summary>
-        /// Performs multiple delete operations in a batch
+        /// Deletes an entity
         /// </summary>
-        public async Task BatchDeleteAsync(IEnumerable<string> paths)
+        public async Task DeleteEntityAsync(string path)
         {
-            await InitializeAsync();
+            if (!_initialized)
+            {
+                await InitializeAsync();
+            }
 
             try
             {
-                var tasks = paths.Select(path =>
-                    _firebaseClient.Child(path).DeleteAsync());
+                _logger.LogTrace("Deleting entity at path: {Path}", path);
 
-                await Task.WhenAll(tasks);
-
-                // Invalidate affected cache entries
-                foreach (var path in paths)
-                {
-                    _cacheService.InvalidateCache($"get:{path}");
-                    string collectionPath = path.Split('/')[0];
-                    _cacheService.InvalidateCachePattern($"collection:{collectionPath}");
-                }
+                await _firebaseClient.DeleteAsync(path);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error executing batch delete");
+                _logger.LogError(ex, "Error deleting entity at path {Path}: {Message}", path, ex.Message);
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// Performs multiple update operations in a single batch
+        /// </summary>
+        public async Task BatchUpdateAsync(Dictionary<string, object> updates)
+        {
+            if (!_initialized)
+            {
+                await InitializeAsync();
+            }
+
+            if (updates == null || !updates.Any())
+            {
+                return;
+            }
+
+            try
+            {
+                _logger.LogTrace("Performing batch update with {Count} operations", updates.Count);
+
+                // Firebase REST API doesn't support true batching, so we use a transaction
+                using var transaction = await BeginTransactionAsync();
+
+                foreach (var update in updates)
+                {
+                    if (update.Value == null)
+                    {
+                        await transaction.DeleteEntityAsync(update.Key);
+                    }
+                    else
+                    {
+                        await transaction.SetEntityAsync(update.Key, update.Value);
+                    }
+                }
+
+                await transaction.CommitAsync();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error performing batch update: {Message}", ex.Message);
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// Performs multiple delete operations in a single batch
+        /// </summary>
+        public async Task BatchDeleteAsync(IEnumerable<string> paths)
+        {
+            if (!_initialized)
+            {
+                await InitializeAsync();
+            }
+
+            if (paths == null || !paths.Any())
+            {
+                return;
+            }
+
+            try
+            {
+                _logger.LogTrace("Performing batch delete with {Count} operations", paths.Count());
+
+                // Convert paths to a batch update with null values (Firebase way to delete)
+                var updates = paths.ToDictionary(path => path, path => (object)null);
+                await BatchUpdateAsync(updates);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error performing batch delete: {Message}", ex.Message);
                 throw;
             }
         }
@@ -438,30 +372,30 @@ namespace MarketDZ.Services.Infrastructure.Firebase.Data
         /// </summary>
         public async Task<int> GetCollectionSizeAsync(string path)
         {
-            await InitializeAsync();
-
-            string cacheKey = $"size:{path}";
-            if (_cacheService.TryGetFromCache<int>(cacheKey, out var cachedSize))
+            if (!_initialized)
             {
-                _logger.LogInformation($"Cache hit for {cacheKey}");
-                return cachedSize;
+                await InitializeAsync();
             }
-
-            _logger.LogInformation($"Counting items in collection at {path}");
 
             try
             {
-                var items = await GetCollectionAsync<object>(path);
-                int size = items.Count;
+                _logger.LogTrace("Getting collection size at path: {Path}", path);
 
-                // Cache the size
-                _cacheService.AddToCache(cacheKey, size);
+                // Firebase doesn't have a direct way to get collection size
+                // We'll fetch just the keys to minimize data transfer
+                var response = await _firebaseClient.GetAsync($"{path}?shallow=true");
 
-                return size;
+                if (string.IsNullOrEmpty(response) || response == "null")
+                {
+                    return 0;
+                }
+
+                var dictionary = JsonConvert.DeserializeObject<Dictionary<string, bool>>(response);
+                return dictionary?.Count ?? 0;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, $"Error getting collection size for path {path}");
+                _logger.LogError(ex, "Error getting collection size at path {Path}: {Message}", path, ex.Message);
                 return 0;
             }
         }
@@ -469,305 +403,339 @@ namespace MarketDZ.Services.Infrastructure.Firebase.Data
         /// <summary>
         /// Begins a transaction for atomic operations
         /// </summary>
-        public Task<ITransaction> BeginTransactionAsync()
+        public async Task<ITransaction> BeginTransactionAsync()
         {
-            // Create a transaction without using _loggerFactory
-            return Task.FromResult<ITransaction>(new FirebaseTransaction(_firebaseClient, this, _logger));
-        }
-
-        /// <summary>
-        /// Execute a Firebase operation with retries
-        /// </summary>
-        public async Task<T> ExecuteWithRetryAsync<T>(Func<Task<T>> operation, string operationName)
-        {
-            int attempt = 0;
-            while (true)
+            if (!_initialized)
             {
-                try
-                {
-                    attempt++;
-                    return await operation();
-                }
-                catch (Exception ex)
-                {
-                    if (attempt >= _maxRetries)
-                    {
-                        _logger.LogError(ex, $"Operation '{operationName}' failed after {attempt} attempts");
-                        throw;
-                    }
-
-                    _logger.LogInformation($"Attempt {attempt} for operation '{operationName}' failed, retrying in {_retryDelay.TotalSeconds} seconds");
-                    await Task.Delay(_retryDelay);
-                }
+                await InitializeAsync();
             }
+
+            return new FirebaseTransaction(_firebaseClient, _logger);
         }
 
         /// <summary>
-        /// Disposes the data store
+        /// Clean up resources
         /// </summary>
         public void Dispose()
         {
-            _maintenanceCts?.Cancel();
-            _maintenanceCts?.Dispose();
-            _httpClient?.Dispose();
+            // Firebase client doesn't need explicit disposal
+        }
+    }
+
+    /// <summary>
+    /// Firebase implementation of the ITransaction interface
+    /// </summary>
+    public class FirebaseTransaction : ITransaction
+    {
+        private readonly FirebaseClient _firebaseClient;
+        private readonly ILogger _logger;
+        private readonly Dictionary<string, object> _updates = new Dictionary<string, object>();
+        private readonly HashSet<string> _deletions = new HashSet<string>();
+        private readonly Dictionary<string, object> _readCache = new Dictionary<string, object>();
+        private TransactionStatus _status = TransactionStatus.Active;
+
+        public FirebaseTransaction(
+            FirebaseClient firebaseClient,
+            ILogger logger)
+        {
+            _firebaseClient = firebaseClient ?? throw new ArgumentNullException(nameof(firebaseClient));
+            _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         }
 
         /// <summary>
-        /// Retrieves a filtered collection of entities
+        /// Gets the current transaction status
         /// </summary>
-        public async Task<List<T>> GetFilteredCollectionAsync<T>(string path, IQueryParameters parameters)
-        {
-            await InitializeAsync();
+        public TransactionStatus Status => _status;
 
-            string cacheKey = $"filteredCollection:{path}" + (parameters != null ? ":" + parameters.GetCacheKey() : "");
-            if (_cacheService.TryGetFromCache<List<T>>(cacheKey, out var cachedItems))
+        /// <summary>
+        /// Gets an entity within the transaction
+        /// </summary>
+        public async Task<T> GetEntityAsync<T>(string path) where T : class
+        {
+            CheckActive();
+
+            // Check if entity was already read in this transaction
+            if (_readCache.TryGetValue(path, out var cached) && cached is T cachedEntity)
             {
-                _logger.LogInformation($"Cache hit for {cacheKey}");
-                return cachedItems!;
+                return cachedEntity;
             }
 
-            _logger.LogInformation($"Fetching filtered collection data from {path}");
+            // Check if entity was updated in this transaction
+            if (_updates.TryGetValue(path, out var updated) && updated is T updatedEntity)
+            {
+                _readCache[path] = updatedEntity;
+                return updatedEntity;
+            }
+
+            // Check if entity was deleted in this transaction
+            if (_deletions.Contains(path))
+            {
+                return null;
+            }
 
             try
             {
-                // Build the query using the converter
-                ChildQuery query = _queryConverter.BuildQuery(_firebaseClient, path, parameters);
+                var response = await _firebaseClient.GetAsync(path);
 
-                // Get raw JSON first to handle both array and object formats
-                var jsonResponse = await query.OnceAsJsonAsync();
-
-                if (string.IsNullOrWhiteSpace(jsonResponse) || jsonResponse == "null")
+                if (string.IsNullOrEmpty(response) || response == "null")
                 {
-                    return new List<T>();
+                    return null;
                 }
 
-                List<T> result;
+                var entity = JsonConvert.DeserializeObject<T>(response);
+                _readCache[path] = entity;
 
-                // Check if the response is an array
-                if (jsonResponse.TrimStart().StartsWith("["))
-                {
-                    // Process as array
-                    var jArray = JArray.Parse(jsonResponse);
-                    result = new List<T>();
-
-                    for (int i = 0; i < jArray.Count; i++)
-                    {
-                        if (jArray[i] != null && jArray[i].Type != JTokenType.Null)
-                        {
-                            try
-                            {
-                                var item = jArray[i].ToObject<T>();
-                                if (item != null)
-                                {
-                                    result.Add(item);
-                                }
-                            }
-                            catch (JsonException jsonEx)
-                            {
-                                _logger.LogError(jsonEx, $"Error deserializing item at index {i}");
-                            }
-                        }
-                    }
-                }
-                else
-                {
-                    // Process as object
-                    try
-                    {
-                        var dictionary = JsonConvert.DeserializeObject<Dictionary<string, T>>(jsonResponse);
-                        result = dictionary?
-                            .Where(kvp => kvp.Value != null)
-                            .Select(kvp => kvp.Value)
-                            .ToList() ?? new List<T>();
-                    }
-                    catch (JsonException dictEx)
-                    {
-                        _logger.LogError(dictEx, "Error deserializing as dictionary");
-                        result = new List<T>();
-                    }
-                }
-
-                // Apply any remaining client-side filters
-                result = _queryConverter.ApplyClientSideFilters(result, parameters).ToList();
-
-                _logger.LogInformation($"Retrieved {result.Count} items via filtered query from {path}");
-
-                // Cache the results
-                _cacheService.AddToCache(cacheKey, result);
-
-                return result;
+                return entity;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, $"Error in GetFilteredCollectionAsync for path {path}");
-                return new List<T>();
+                _logger.LogError(ex, "Error getting entity in transaction at path {Path}: {Message}", path, ex.Message);
+                _status = TransactionStatus.Failed;
+                throw;
             }
         }
 
         /// <summary>
-        /// Gets a document by its path, similar to GetEntityAsync but with a different name
+        /// Creates or updates an entity within the transaction
         /// </summary>
-        public async Task<T> GetDocumentAsync<T>(string path)
+        public Task SetEntityAsync<T>(string path, T data) where T : class
         {
-            // This is essentially the same as GetEntityAsync
-            return await GetEntityAsync<T>(path);
-        }
-        public Task DeleteAsync<T>(string key)
-        {
-            // Assuming DeleteEntityAsync exists and handles deletions
-            return DeleteEntityAsync(key);
-        }
+            CheckActive();
 
-        public Task StoreAsync(string key, object value)
-        {
-            // Assuming SetEntityAsync exists and handles storing entities
-            return SetEntityAsync(key, value);
+            _updates[path] = data;
+            _deletions.Remove(path); // In case it was scheduled for deletion
+
+            return Task.CompletedTask;
         }
 
         /// <summary>
-        /// Updates an entity in the database
+        /// Updates specific fields of an entity within the transaction
         /// </summary>
-        public async Task UpdateEntityAsync(string path, Conversation conversation)
+        public async Task UpdateFieldsAsync(string path, IDictionary<string, object> updates)
         {
-            await InitializeAsync();
+            CheckActive();
 
-            if (conversation == null)
+            // Get current entity
+            var currentEntity = await GetEntityAsync<Dictionary<string, object>>(path);
+
+            if (currentEntity == null)
             {
-                throw new ArgumentNullException(nameof(conversation));
+                currentEntity = new Dictionary<string, object>();
             }
 
-            _logger.LogInformation($"Updating entity at {path}");
-
-            // Convert Conversation to FirebaseConversation
-            var firebaseConversation = FirebaseConversation.FromConversation(conversation);
-
-            // Increment version
-            firebaseConversation.Version = conversation.Version + 1;
-            firebaseConversation.LastModified = DateTime.UtcNow;
-
-            // Execute with retry
-            await ExecuteWithRetryAsync<object>(() =>
-                _firebaseClient.Child(path).PutAsync(firebaseConversation).ContinueWith(t => (object)null),
-                $"UpdateEntityAsync:{path}");
-
-            // Invalidate cache
-            _cacheService.InvalidateCache($"get:{path}");
-            string collectionPath = path.Split('/')[0];
-            _cacheService.InvalidateCachePattern($"collection:{collectionPath}");
-        }
-
-        /// <summary>
-        /// Updates specific fields of an entity
-        /// </summary>
-        public async Task UpdateEntityFieldsAsync(string path, Conversation conversation)
-        {
-            await InitializeAsync();
-
-            if (conversation == null)
+            // Apply updates
+            foreach (var update in updates)
             {
-                throw new ArgumentNullException(nameof(conversation));
+                currentEntity[update.Key] = update.Value;
             }
 
-            _logger.LogInformation($"Updating fields for entity at {path}");
-
-            // Create a dictionary of fields to update
-            var updates = new Dictionary<string, object>
-            {
-                ["title"] = conversation.Title ?? string.Empty,
-                ["lastMessagePreview"] = conversation.LastMessagePreview ?? string.Empty,
-                ["lastMessageAt"] = conversation.LastMessageAt,
-                ["lastMessageSenderId"] = conversation.LastMessageSenderId,
-                // Fix for CS0019: Ensure the types in the null-coalescing operator match.
-                // Change the default value to match the type of `UnreadCountPerUser` which is `Dictionary<string, int>`.
-
-                ["unreadCountPerUser"] = conversation.UnreadCountPerUser ?? new Dictionary<string, int>(),
-                // Fix for CS8601: Possible null reference assignment.
-                // Ensure that null values are replaced with a default value to avoid null reference issues.
-
-                ["lastMessageSenderId"] = conversation.LastMessageSenderId ?? string.Empty,
-                // Fix for CS8601: Ensure the types in the null-coalescing operator match.
-                // Change the default value to match the type of `UnreadCountPerUser` which is `Dictionary<string, int>`.
-
-                ["lastMessageSenderId"] = conversation.LastMessageSenderId ?? string.Empty,
-                ["unreadCountPerUser"] = conversation.UnreadCountPerUser ?? new Dictionary<string, int>(),
-                ["unreadCountPerUser"] = conversation.UnreadCountPerUser ?? new Dictionary<string, int>(),
-                ["isArchived"] = conversation.IsArchived,
-                ["version"] = conversation.Version + 1,
-                ["lastModified"] = DateTime.UtcNow
-            };
-
-            // Execute individual field updates with retry
-            var tasks = updates.Select(update =>
-                ExecuteWithRetryAsync<object>(() =>
-                    _firebaseClient.Child(path).Child(update.Key).PutAsync(update.Value).ContinueWith(t => (object)null),
-                    $"UpdateEntityFieldsAsync:{path}/{update.Key}")
-            );
-
-            await Task.WhenAll(tasks);
-
-            // Invalidate related caches
-            _cacheService.InvalidateCache($"get:{path}");
-            string collectionPath = path.Split('/')[0];
-            _cacheService.InvalidateCachePattern($"collection:{collectionPath}");
+            // Store updated entity
+            _updates[path] = currentEntity;
+            _deletions.Remove(path); // In case it was scheduled for deletion
         }
 
         /// <summary>
-        /// Helper method to migrate array-structured data to use proper Firebase keys
+        /// Deletes an entity within the transaction
         /// </summary>
-        public async Task MigrateArrayToKeyValueStructureAsync<T>(string collectionPath)
+        public Task DeleteEntityAsync(string path)
         {
-            _logger.LogInformation($"Starting migration of {collectionPath} from array to key-value structure");
+            CheckActive();
+
+            _deletions.Add(path);
+            _updates.Remove(path); // In case it was scheduled for update
+
+            return Task.CompletedTask;
+        }
+
+        /// <summary>
+        /// Commits all changes in the transaction
+        /// </summary>
+        public async Task CommitAsync()
+        {
+            CheckActive();
 
             try
             {
-                // Get current array data
-                var jsonResponse = await _firebaseClient.Child(collectionPath).OnceAsJsonAsync();
-
-                if (string.IsNullOrWhiteSpace(jsonResponse) || jsonResponse == "null" || !jsonResponse.TrimStart().StartsWith("["))
+                if (!_updates.Any() && !_deletions.Any())
                 {
-                    _logger.LogInformation($"No array found at {collectionPath}, nothing to migrate");
+                    _status = TransactionStatus.Committed;
                     return;
                 }
 
-                // Parse array
-                var jArray = JArray.Parse(jsonResponse);
-                var migrationTasks = new List<Task>();
+                // Create a batch update payload
+                var batch = new Dictionary<string, object>();
 
-                // For each non-null item in the array
-                for (int i = 0; i < jArray.Count; i++)
+                // Add updates
+                foreach (var update in _updates)
                 {
-                    if (jArray[i] == null || jArray[i].Type == JTokenType.Null)
-                        continue;
-
-                    try
-                    {
-                        // Create a new entry with a push ID
-                        var item = jArray[i].ToObject<T>();
-                        if (item != null)
-                        {
-                            // Use PostAsync to get a new push ID
-                            migrationTasks.Add(_firebaseClient.Child(collectionPath).PostAsync(item));
-                        }
-                    }
-                    catch (Exception innerEx)
-                    {
-                        _logger.LogError(innerEx, $"Error migrating item at index {i}");
-                    }
+                    batch[update.Key] = update.Value;
                 }
 
-                // Wait for all migrations to complete
-                await Task.WhenAll(migrationTasks);
+                // Add deletions as null values
+                foreach (var path in _deletions)
+                {
+                    batch[path] = null;
+                }
 
-                // Now delete the old array (potentially dangerous, consider backing up first)
-                // await _firebaseClient.Child(collectionPath).DeleteAsync();
+                // Execute batch update using Firebase's PATCH method
+                var json = JsonConvert.SerializeObject(batch);
+                await _firebaseClient.PatchAsync("", json);
 
-                _logger.LogInformation($"Migration of {collectionPath} completed successfully");
+                _status = TransactionStatus.Committed;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, $"Error during migration of {collectionPath}");
+                _logger.LogError(ex, "Error committing transaction: {Message}", ex.Message);
+                _status = TransactionStatus.Failed;
                 throw;
             }
+        }
+
+        /// <summary>
+        /// Rolls back all changes in the transaction
+        /// </summary>
+        public Task RollbackAsync()
+        {
+            CheckActive();
+
+            _updates.Clear();
+            _deletions.Clear();
+            _status = TransactionStatus.RolledBack;
+
+            return Task.CompletedTask;
+        }
+
+        /// <summary>
+        /// Checks if the transaction is active
+        /// </summary>
+        private void CheckActive()
+        {
+            if (_status != TransactionStatus.Active)
+            {
+                throw new InvalidOperationException($"Transaction is not active. Current status: {_status}");
+            }
+        }
+
+        /// <summary>
+        /// Clean up resources
+        /// </summary>
+        public void Dispose()
+        {
+            if (_status == TransactionStatus.Active)
+            {
+                try
+                {
+                    RollbackAsync().GetAwaiter().GetResult();
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Error rolling back transaction during disposal: {Message}", ex.Message);
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Simple HTTP client for Firebase Realtime Database REST API
+    /// </summary>
+    public class FirebaseClient
+    {
+        private readonly string _baseUrl;
+        private readonly string _authToken;
+        private readonly HttpClient _httpClient;
+
+        public FirebaseClient(string databaseUrl, string authToken = null)
+        {
+            if (string.IsNullOrEmpty(databaseUrl))
+            {
+                throw new ArgumentNullException(nameof(databaseUrl));
+            }
+
+            _baseUrl = databaseUrl.TrimEnd('/');
+            _authToken = authToken;
+            _httpClient = new HttpClient();
+        }
+
+        /// <summary>
+        /// Builds a URL with optional auth token
+        /// </summary>
+        private string BuildUrl(string path)
+        {
+            string url = $"{_baseUrl}/{path}.json";
+
+            if (!string.IsNullOrEmpty(_authToken))
+            {
+                url += $"?auth={_authToken}";
+            }
+
+            return url;
+        }
+
+        /// <summary>
+        /// Gets data from Firebase
+        /// </summary>
+        public async Task<string> GetAsync(string path)
+        {
+            var url = BuildUrl(path);
+            var response = await _httpClient.GetAsync(url);
+            response.EnsureSuccessStatusCode();
+
+            return await response.Content.ReadAsStringAsync();
+        }
+
+        /// <summary>
+        /// Creates or replaces data at the specified path
+        /// </summary>
+        public async Task<string> PutAsync(string path, string json)
+        {
+            var url = BuildUrl(path);
+            var content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
+            var response = await _httpClient.PutAsync(url, content);
+            response.EnsureSuccessStatusCode();
+
+            return await response.Content.ReadAsStringAsync();
+        }
+
+        /// <summary>
+        /// Creates a new child with an auto-generated key
+        /// </summary>
+        public async Task<string> PostAsync(string path, string json)
+        {
+            var url = BuildUrl(path);
+            var content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
+            var response = await _httpClient.PostAsync(url, content);
+            response.EnsureSuccessStatusCode();
+
+            return await response.Content.ReadAsStringAsync();
+        }
+
+        /// <summary>
+        /// Updates specific fields at the specified path
+        /// </summary>
+        public async Task<string> PatchAsync(string path, string json)
+        {
+            var url = BuildUrl(path);
+            var request = new HttpRequestMessage(new HttpMethod("PATCH"), url)
+            {
+                Content = new StringContent(json, System.Text.Encoding.UTF8, "application/json")
+            };
+
+            var response = await _httpClient.SendAsync(request);
+            response.EnsureSuccessStatusCode();
+
+            return await response.Content.ReadAsStringAsync();
+        }
+
+        /// <summary>
+        /// Deletes data at the specified path
+        /// </summary>
+        public async Task<string> DeleteAsync(string path)
+        {
+            var url = BuildUrl(path);
+            var response = await _httpClient.DeleteAsync(url);
+            response.EnsureSuccessStatusCode();
+
+            return await response.Content.ReadAsStringAsync();
         }
     }
 }

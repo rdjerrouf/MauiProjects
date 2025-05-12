@@ -1,4 +1,5 @@
 ﻿using MarketDZ.Models;
+using MarketDZ.Models.Core.Entities;
 using MarketDZ.Models.Dtos;
 using MarketDZ.Models.Dtos.Item;
 using System.Collections.ObjectModel;
@@ -49,6 +50,5 @@ namespace MarketDZ.Services.Application.Items.Iterfaces
         Task<bool> IsItemAvailableAsync(string itemId);
         Task<IEnumerable<object>> GetUserItemsAsync(string userId);
         Task<IEnumerable<object>> GetAllItemsAsync();
-        Task<bool> UpdateItemAsync(string userId, string itemId, ItemUpdateDto updateDto);
     }
 }

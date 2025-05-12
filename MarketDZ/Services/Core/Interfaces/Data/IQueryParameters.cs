@@ -1,13 +1,12 @@
-﻿using MarketDZ.Services.DbServices;
-using MarketDZ.Models.Filters;
-using MarketDZ.Services.DbServices.Firebase;
-
-
+﻿using MarketDZ.Models.Filters;
+using System.Collections.Generic;
+using MarketDZ.Services.Core.Models;
+using MarketDZ.Models.Infrastructure.Common;
 
 namespace MarketDZ.Services.Core.Interfaces.Data
 {
     /// <summary>
-    /// Defines parameters for querying data stores in a database-agnostic way
+    /// Interface for database-agnostic query parameters
     /// </summary>
     public interface IQueryParameters
     {
@@ -32,25 +31,39 @@ namespace MarketDZ.Services.Core.Interfaces.Data
         IList<FilterCriteria> FilterCriteria { get; }
 
         /// <summary>
+        /// Custom parameters for database-specific features
+        /// </summary>
+        IDictionary<string, object> CustomParameters { get; }
+
+        /// <summary>
         /// Adds a filter condition
         /// </summary>
-        /// <param name="field">Name of the field to filter on</param>
-        /// <param name="op">Filter operation</param>
+        /// <param name="field">Field name to filter on</param>
+        /// <param name="op">Filter operator</param>
         /// <param name="value">Value to compare against</param>
-        void AddFilter(string field, FilterOperator op, object value);
+        /// <returns>This instance for method chaining</returns>
+        IQueryParameters AddFilter(string field, FilterOperator op, object value);
 
         /// <summary>
         /// Adds a sorting condition
         /// </summary>
-        /// <param name="field">Name of the field to sort on</param>
+        /// <param name="field">Field name to sort on</param>
         /// <param name="direction">Sort direction</param>
-        void AddSort(string field, SortDirection direction);
+        /// <returns>This instance for method chaining</returns>
+        IQueryParameters AddSort(string field, SortDirection direction);
 
         /// <summary>
-        /// Creates a cache key representing these query parameters
+        /// Adds a custom parameter
+        /// </summary>
+        /// <param name="key">Parameter key</param>
+        /// <param name="value">Parameter value</param>
+        /// <returns>This instance for method chaining</returns>
+        IQueryParameters AddCustomParameter(string key, object value);
+
+        /// <summary>
+        /// Creates a cache key for these parameters
         /// </summary>
         /// <returns>String representation for caching</returns>
         string GetCacheKey();
-
     }
 }

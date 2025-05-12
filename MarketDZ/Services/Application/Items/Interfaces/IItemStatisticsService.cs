@@ -1,4 +1,5 @@
 ﻿using MarketDZ.Models;
+using MarketDZ.Models.Core.Entities;
 using MarketDZ.Models.Dtos;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;

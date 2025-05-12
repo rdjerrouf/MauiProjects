@@ -1,5 +1,5 @@
 ﻿
-using MarketDZ.Services.Media;
+using MarketDZ.Services.Application.Media.Interfaces;
 using Microsoft.Extensions.Logging;
 
 namespace MarketDZ.Extensions

@@ -1,7 +1,10 @@
 ﻿// MarketDZ.Services.UserServices/IUserAuthService.cs
+using Firebase.Auth;
 using MarketDZ.Models;
+using MarketDZ.Models.Core;
+using MarketDZ.Models.Core.Dtos.Auth;
 using MarketDZ.Models.Dtos;
-using MarketDZ.Services.Repositories;
+using MarketDZ.Models.Dtos.User;
 using Microsoft.Extensions.Logging;
 
 namespace MarketDZ.Services.Application.Users.Interfaces

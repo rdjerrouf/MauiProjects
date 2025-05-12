@@ -1,5 +1,7 @@
 ﻿using MarketDZ.Models.Dtos;
 using MarketDZ.Models;
+using MarketDZ.Models.Core.Entities;
+using MarketDZ.Models.Dtos.User;
 
 namespace MarketDZ.Services.Application.Users.Interfaces
 {

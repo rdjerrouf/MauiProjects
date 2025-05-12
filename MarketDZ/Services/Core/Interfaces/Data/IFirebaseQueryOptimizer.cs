@@ -1,7 +1,8 @@
 ﻿using MarketDZ.Models;
+using MarketDZ.Models.Core.Entities;
 using MarketDZ.Models.Filters;
-using MarketDZ.Models.Firebase.Base.Adapters;
-using MarketDZ.Services.DbServices;
+using MarketDZ.Models.Infrastructure.Common;
+using MarketDZ.Models.Infrastructure.Firebase.Entities;
 using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Generic;

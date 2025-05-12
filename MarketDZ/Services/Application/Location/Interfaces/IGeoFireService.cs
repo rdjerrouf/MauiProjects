@@ -1,9 +1,9 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
-using System.Linq;
-using System.Text;
 using System.Threading.Tasks;
+using MarketDZ.Models.Core.Entities;
+using MarketDZ.Models.Core.ValueObjects;
 
 namespace MarketDZ.Services.Application.Location.Interfaces
 {

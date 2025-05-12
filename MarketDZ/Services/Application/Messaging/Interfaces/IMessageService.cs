@@ -1,6 +1,9 @@
 ﻿using MarketDZ.Models;
+using MarketDZ.Models.Core.Entities;
 using MarketDZ.Models.Dtos;
+using MarketDZ.Models.Dtos.Message;
 using MarketDZ.Models.Firebase;
+using MarketDZ.Models.Infrastructure.Common;
 using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;

@@ -1,6 +1,4 @@
-﻿using MarketDZ.Models.Firebase.Base;
-using MarketDZ.Services.DbServices;
-using Microsoft.Extensions.Logging;
+﻿using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Generic;
 using System.Threading;

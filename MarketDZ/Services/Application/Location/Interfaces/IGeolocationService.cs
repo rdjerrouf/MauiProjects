@@ -1,6 +1,9 @@
-﻿using MarketDZ.Models.Firebase;
+﻿// IGeolocationService.cs
 using System.Collections.Generic;
+using System.Collections.ObjectModel;
 using System.Threading.Tasks;
+using MarketDZ.Models.Core.ValueObjects; // Use the new namespace for Location
+using MarketDZ.Models.Infrastructure.Firebase.Indexes;
 
 namespace MarketDZ.Services.Application.Location.Interfaces
 {
@@ -50,8 +53,10 @@ namespace MarketDZ.Services.Application.Location.Interfaces
         List<T> FilterItemsByDistance<T>(IEnumerable<T> items,
             double centerLat, double centerLon, double radiusKm,
             System.Func<T, (double Latitude, double Longitude)> coordinateSelector);
-        Task<Location?> GetCurrentLocation();
-        Task<string?> GetLocationName(Location location);
-        Task<Location> GetLocationFromAddress(string searchAddress);
+
+        Task<MarketDZ.Models.Core.ValueObjects.Location?> GetCurrentLocation();
+        Task<string?> GetLocationName(MarketDZ.Models.Core.ValueObjects.Location location);
+        Task<MarketDZ.Models.Core.ValueObjects.Location> GetLocationFromAddress(string searchAddress);
     }
 }
+

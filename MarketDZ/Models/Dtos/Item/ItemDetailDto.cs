@@ -1,11 +1,11 @@
-﻿using System.Collections.Generic;
-using MarketDZ.Models.Dtos.Item;
+﻿using System;
+using System.Collections.Generic;
 
-namespace MarketDZ.Models.Dtos
+namespace MarketDZ.Models.Dtos.Item
 {
-    namespace MarketDZ.Models.Dtos.Item
+    public class ItemDetailDto
     {
-        public string?  ItemId { get; set; }
+        public string? ItemId { get; set; }
         public string Title { get; set; } = string.Empty;
         public string Description { get; set; } = string.Empty;
         public decimal Price { get; set; }
@@ -16,6 +16,6 @@ namespace MarketDZ.Models.Dtos
         public List<PhotoDto> Photos { get; set; } = new();
         public DateTime ListedDate { get; set; }
         public string? PostedByUser { get; set; }
-        public string?  PostedByUserId { get; set; }
+        public string? PostedByUserId { get; set; }
     }
 }
